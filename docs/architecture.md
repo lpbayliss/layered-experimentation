@@ -4,11 +4,13 @@
 
 **Proposed.** This document makes the specification concrete enough to prototype. Storage, event transport, SLOs, and authorisation remain decision gates before production.
 
+[Correctness contracts](correctness-contracts.md) are normative for revision/epoch separation, configuration/revocation consistency, assignment uniqueness, context lineage, event idempotency, effect composition, privacy, and deletion.
+
 ## 1. Architecture principles
 
-1. **Central authority, local resilience.** The service owns definitions and authoritative decisions; signed snapshots permit policy-controlled local evaluation during outages.
+1. **Central authority, bounded local resilience.** The service owns definitions and authoritative first decisions; signed snapshots support cached reuse and only explicitly leased local-first modes with reconciliation and revocation bounds.
 2. **Immutable inputs to deterministic decisions.** Definitions, algorithms, canonical serialization, and assignment epochs are versioned.
-3. **Facts before derived interpretation.** Assignment, exposure, applied effect, unit relationship, and outcome are append-only facts. Attribution is a versioned derived view.
+3. **Facts before derived interpretation.** Assignment, exposure, applied effect, unit relationship, and outcome are immutable-by-default facts with linked corrections and explicit lawful-erasure semantics. Attribution is a versioned derived view.
 4. **Conflict prevention before analysis.** The control plane rejects deterministic conflicts; data products reveal allowed or unknown interactions.
 5. **No ambient experiment state.** A decision-context token is explicitly propagated through calls and events.
 6. **No silent rebucketing.** Allocation-map changes produce a churn preview; unrelated active allocations are invariant.
@@ -111,7 +113,7 @@ The SDK must not hide the difference between a decision and exposure. An optiona
 
 ### 2.4 Event/data plane
 
-Accepts append-only facts, validates envelopes, deduplicates by event ID, and produces canonical datasets. It does not mutate historical assignments to match current configuration.
+Accepts immutable-by-default facts, validates envelopes, deduplicates by scoped event ID/fingerprint, records linked corrections or lawful-erasure tombstones, and produces canonical datasets. It does not mutate historical assignments to match current configuration.
 
 ## 3. Control-plane model
 
@@ -152,10 +154,11 @@ layer: checkout
 randomisationUnit: account
 slotCount: 10000
 assignmentAlgorithm: hash-slot-v1
-assignmentEpoch: 1
+namespacePartitionEpoch: 1
+allocationMapRevision: 1
 ```
 
-Slot count and canonical hash algorithm are immutable within an epoch. A namespace binds exactly one randomisation unit type; experiments using another unit type require another namespace and explicit overlap analysis. Without that rule, “mutual exclusion” across unrelated IDs would be false.
+Slot count and canonical hash algorithm are immutable within a namespace partition epoch. A namespace binds exactly one randomisation unit type; experiments using another unit type require another namespace and explicit overlap analysis. Without that rule, “mutual exclusion” across unrelated IDs would be false.
 
 #### Effect
 
@@ -171,7 +174,8 @@ A registered reducer is required for modes other than `replace`.
 
 ```yaml
 id: checkout-layout-2026-01
-revision: 1
+definitionRevision: 1
+analysisRevision: 1
 status: draft
 owner: team-checkout
 hypothesis: A shorter sequence improves completion without increasing support contacts.
@@ -257,26 +261,27 @@ Two revisions are definitely conflicting when their schedules and eligibility ca
 Static eligibility intersection may be undecidable for external attributes. The expression language must therefore be deliberately limited and support three results:
 
 ```text
-disjoint | overlapping | unknown
+proven-disjoint | may-overlap | invalid
 ```
 
-`unknown` requires explicit review; it is never treated as disjoint automatically.
+`may-overlap` is treated as overlap; it is never treated as disjoint automatically.
 
 ### 3.5 Compatibility semantics
 
-Compatibility is symmetric at publication. One-sided allow does not permit overlap.
+Pairwise compatibility is symmetric at publication and remains a necessary precheck. One-sided allow does not permit overlap. Final validity is evaluated over the complete simultaneously applicable set:
 
 ```text
-compatible(A,B) =
-  scheduleMayOverlap(A,B)
-  AND eligibilityMayOverlap(A,B)
-  AND mutualAllow(A,B)
-  AND noDeny(A,B)
-  AND effectsCompose(A,B)
-  AND unitsCompatible(A,B)
+valid(S) =
+  allPairPoliciesAllow(S)
+  AND noExclusionMatches(S)
+  AND unitsCompatible(S)
+  AND completeEffectReductionIsDefined(S)
+  AND deterministicIndependentOfDiscoveryOrder(S)
 ```
 
-The snapshot contains the resolved compatibility matrix so the data plane does not infer policy on each request.
+Registered reducers carry types, identity, associativity, commutativity/ordering, error semantics, limits, and version. Duplicate `replace` claims are invalid without a dedicated versioned composition contract.
+
+The snapshot contains resolved pair policy plus set-level reducer contracts so the data plane does not invent composition policy on each request.
 
 ## 4. Deterministic allocation
 
@@ -302,7 +307,7 @@ Example conceptual preimage:
 {
   "algorithm": "hash-slot-v1",
   "namespace": "checkout-primary",
-  "namespaceEpoch": 1,
+  "namespacePartitionEpoch": 1,
   "unit": { "type": "account", "id": "opaque-123" }
 }
 ```
@@ -313,12 +318,12 @@ The implementation should use a modern, stable hash with rejection sampling or a
 
 ```text
 slot = UniformInteger(
-  Hash(namespaceSalt, namespaceEpoch, canonicalUnit),
+  Hash(namespaceSalt, namespacePartitionEpoch, canonicalUnit),
   [0, slotCount)
 )
 ```
 
-A slot has at most one active owner in one namespace and epoch.
+A slot has at most one active owner in one namespace partition epoch and ownership interval. The snapshot carries a separate monotonic allocation-map revision; changing one owner never rotates the namespace hash or moves another owner.
 
 The slot map is explicit snapshot data:
 
@@ -328,7 +333,7 @@ The slot map is explicit snapshot data:
 1500-9999: unallocated
 ```
 
-Stopping `experiment-a` changes its slots to `unallocated`; it does not shift `experiment-b`.
+Stopping `experiment-a` closes its ownership and exposure interval without shifting `experiment-b`. Freed slots may enter a policy-defined washout/quarantine interval before reuse. Expanding, shrinking, or reusing slot ownership creates a new assignment epoch for the affected experiment and a churn/carryover review; changing namespace unit, slot count, canonicalisation, hash, or salt creates a high-impact namespace partition epoch migration.
 
 ### 4.3 Variant selection
 
@@ -343,18 +348,13 @@ Because the experiment ID is in the salt, assignments across experiments are ind
 
 ### 4.4 Weight and revision changes
 
-Changing metadata that cannot affect eligibility, treatment, assignment, or analysis may preserve the epoch.
+Changing any field creates an immutable definition revision. Changes have separate consequences:
 
-These changes require a new revision and usually a new assignment epoch:
-
-- variant weights/order;
-- randomisation unit;
-- eligibility;
-- hash algorithm or salt;
-- slot ownership;
-- treatment semantics;
-- compatibility/exclusion;
-- trigger/exposure definition.
+- `analysisRevision` advances for exposure/trigger, metric, guardrail, estimand, attribution, or analysis-plan changes; assignment is preserved but results are segmented;
+- `assignmentEpoch` advances for variant weights/boundaries, randomisation unit, eligibility cohort, experiment salt, treatment semantics, or this experiment’s slot set;
+- `allocationMapRevision` advances for ownership/effective-interval changes without moving other owners;
+- `namespacePartitionEpoch` advances only for namespace unit, slot count, canonicalisation, hash, or salt changes and requires a namespace-wide migration;
+- metadata such as descriptive text or ownership changes only the definition revision.
 
 Before approval, the control plane computes:
 
@@ -420,7 +420,7 @@ Content-Type: application/json
 ```json
 {
   "decisionSetId": "ds_01...",
-  "configurationRevision": "cfg_01...",
+  "configurationSequence": 123,
   "assignments": [
     {
       "assignmentId": "asn_01...",
@@ -446,8 +446,9 @@ Content-Type: application/json
       "safeDefault": "checkout-copy-default"
     }
   ],
+  "contextManifestId": "ctx_01...",
   "contextToken": "...",
-  "expiresAt": "..."
+  "treatmentValidUntil": "..."
 }
 ```
 
@@ -455,7 +456,7 @@ Content-Type: application/json
 
 The idempotency key is scoped to caller/decision point. The first accepted request stores a canonical request hash.
 
-A separate sticky-assignment uniqueness rule applies at experiment scope: `(experiment ID, assignment epoch, canonical unit hash)` may have only one authoritative assignment. Request idempotency prevents duplicate operations; assignment uniqueness prevents the same long-lived unit from being admitted or assigned differently across separate operations.
+A separate sticky-assignment uniqueness rule applies globally at `(tenant, environment, experiment ID, assignment epoch, canonical unit hash)`. Request idempotency prevents duplicate operations; assignment uniqueness prevents the same long-lived unit from being admitted or assigned differently across requests, regions, configuration sequences, or online/offline evaluators. Concurrent multi-experiment requests lock candidate assignment keys in canonical sorted order and commit the complete decision set with its outbox before returning.
 
 - Same key + same canonical request returns the original result.
 - Same key + different canonical request returns conflict.
@@ -473,8 +474,8 @@ GET /v1/decision-sets/{id}/explanation
 Returns:
 
 - snapshot/revision and signatures;
-- canonical unit hashes (not raw sensitive IDs to unauthorised readers);
-- eligibility results and reason codes;
+- tenant/environment-scoped unit token/hash and evidence-retention status;
+- minimized typed predicate results, protected input references, and relationship-resolution versions;
 - namespace slot and owner;
 - variant hash algorithm/version and interval;
 - exclusions and compatibility matrix entries;
@@ -488,16 +489,24 @@ All events use:
 
 ```json
 {
+  "tenant": "tenant-id",
+  "environment": "production",
   "eventId": "evt_01...",
   "schema": "experiment.exposure.v1",
   "occurredAt": "...",
-  "observedAt": "...",
+  "ingestedAt": "...",
   "producer": "checkout-api",
   "producerVersion": "...",
+  "producerSequence": 42,
   "traceId": "...",
+  "contextManifestId": "ctx_01...",
+  "payloadFingerprint": "hmac-sha256:...",
+  "supersedesEventId": null,
   "payload": {}
 }
 ```
+
+Same event ID and fingerprint is an idempotent no-op. Same ID with a different fingerprint is quarantined and alerted. Corrections use a new event with `supersedesEventId`; facts are never overwritten. SDKs must define durable buffering, retry/backoff, bounded backpressure, shutdown flush, and data-loss telemetry.
 
 ### 6.1 Assignment event
 
@@ -505,17 +514,20 @@ All events use:
 {
   "decisionSetId": "ds_01...",
   "assignmentId": "asn_01...",
-  "configurationRevision": "cfg_01...",
+  "configurationSequence": 123,
+  "definitionRevision": 1,
+  "analysisRevision": 1,
   "layer": "checkout",
   "namespace": "checkout-primary",
+  "namespacePartitionEpoch": 1,
+  "allocationMapRevision": 7,
   "experimentId": "checkout-layout-2026-01",
-  "experimentRevision": 1,
   "assignmentEpoch": 1,
   "variant": "short-sequence",
   "unit": { "type": "account", "id": "opaque-123" },
   "slot": 1123,
   "reason": "assigned-treatment",
-  "eligibilitySnapshotHash": "sha256:...",
+  "decisionTraceRef": "trace_01...",
   "failureMode": null
 }
 ```
@@ -526,13 +538,16 @@ All events use:
 {
   "decisionSetId": "ds_01...",
   "assignmentId": "asn_01...",
+  "contextManifestId": "ctx_01...",
   "exposurePoint": "checkout.rendered",
   "unit": { "type": "account", "id": "opaque-123" },
   "activeAssignments": [
     {
       "assignmentId": "asn_01...",
       "experimentId": "checkout-layout-2026-01",
-      "revision": 1,
+      "definitionRevision": 1,
+      "analysisRevision": 1,
+      "assignmentEpoch": 1,
       "variant": "short-sequence"
     }
   ],
@@ -574,6 +589,7 @@ This evaluator must share semantics between control and treatment paths.
     { "type": "account", "id": "opaque-123" },
     { "type": "transaction", "id": "opaque-789" }
   ],
+  "contextManifestId": "ctx_01...",
   "decisionContextToken": "...",
   "attributes": {
     "channel": "web"
@@ -589,6 +605,8 @@ When assignment and outcome units differ:
 
 ```json
 {
+  "relationshipId": "rel_01...",
+  "relationshipVersion": 1,
   "relationshipType": "initiated",
   "from": { "type": "account", "id": "opaque-123" },
   "to": { "type": "transaction", "id": "opaque-789" },
@@ -622,21 +640,24 @@ experiment_exclusions
 configuration_snapshots
 decision_sets
 assignment_decisions
+decision_traces
+context_manifests
+context_manifest_edges
 applied_failure_policies
 outbox_events
 audit_log
 ```
 
-`decision_sets` and `assignment_decisions` are append-only except for operational delivery status fields isolated from business facts.
+`decision_sets` and `assignment_decisions` are never silently overwritten; corrections are linked facts. Lawful erasure may tombstone relationships, crypto-shred protected fields, or aggregate irreversibly, with explicit audit-replay degradation.
 
 ### 7.2 Transaction boundary
 
 One transaction should:
 
 1. claim/check request idempotency key;
-2. lock or insert the sticky assignment key for each candidate `(experiment, epoch, canonical unit hash)` and reuse any existing assignment;
-3. persist the decision set and newly created assignments;
-4. persist context-token reference/key version;
+2. lock or insert sticky keys in canonical order for each candidate `(tenant, environment, experiment, assignment epoch, canonical unit hash)` and reuse existing assignments;
+3. persist the complete decision set, typed traces, and newly created assignments;
+4. persist/merge the context manifest and token key version;
 5. append outbox events;
 6. commit.
 
@@ -650,15 +671,15 @@ Raw event storage must preserve original schema/version and ingestion metadata. 
 
 ### 8.1 Snapshot contents
 
-- revision ID and generated time;
-- validity interval;
-- layer/namespace/slot maps;
-- experiment revisions;
-- resolved eligibility expressions;
-- compatibility/exclusion matrix;
-- safe defaults and failure policies;
+- tenant/environment and monotonic configuration sequence;
+- parent sequence, generated/effective times, validity interval, and minimum accepted sequence;
+- layer/namespace/slot maps with partition epochs, allocation-map revisions, and ownership intervals;
+- immutable experiment definition, assignment, and analysis versions;
+- resolved eligibility expressions and complete-set reducer contracts;
+- compatibility/exclusion policy;
+- safe defaults, failure policies, and revocation references;
 - algorithm versions and salts or derived non-secret keys;
-- signature and key ID.
+- content checksum plus publisher signature, algorithm, and key ID.
 
 ### 8.2 Modes
 
@@ -672,9 +693,9 @@ SDK reuses a service-issued decision until its declared expiry. It must preserve
 
 #### Local snapshot evaluation
 
-Allowed only by layer policy. SDK evaluates an approved snapshot, creates a deterministic provisional decision ID, and emits the full decision event when transport returns. The service later accepts it idempotently if the snapshot was valid at decision time.
+Prohibited for first sticky assignment by default. A future layer-specific mode requires stable canonical eligibility **and** bounded allocation authority/lease, deterministic provisional IDs, asynchronous insert-or-read reconciliation, explicit conflict quarantine, and maximum revocation delay. An operation/request unit may be locally evaluated only under the same authority contract.
 
-Local first assignment is permitted only when eligibility uses stable, canonical attributes available consistently to every evaluator, or when the randomisation unit is the operation itself. A long-lived unit with mutable/disputed eligibility must use online authoritative first assignment; otherwise concurrent offline evaluators could disagree about cohort membership even when their variant hash agrees.
+A signed snapshot by itself does not prevent two offline evaluators from disagreeing about cohort membership or ignoring a revocation.
 
 #### Safe default
 
@@ -682,12 +703,13 @@ If neither valid cached decision nor snapshot is allowed, return the declared de
 
 ### 8.3 Split-brain safeguards
 
-- Responses and events always include configuration revision.
-- The service reports revision-age distribution by caller.
-- Snapshot validity windows are explicit.
-- A kill/revocation channel can invalidate dangerous snapshots.
-- Security-critical fail-closed layers must not use local first assignment.
-- Reconciliation detects conflicting decisions for the same experiment epoch/unit and quarantines analysis.
+- Responses and events always include one pinned monotonic configuration sequence.
+- Rollback publishes a new sequence containing prior content; old sequence numbers never become current again.
+- The service reports sequence-age distribution by caller.
+- Snapshot validity/effective intervals and a minimum accepted sequence are explicit.
+- A monotonic kill/revocation tombstone feed overrides cached decisions and ordinary snapshots.
+- Layers that cannot tolerate the bounded revocation delay require online evaluation or fail closed.
+- Reconciliation detects conflicting decisions for the tenant/environment/experiment/epoch/unit uniqueness key and quarantines analysis.
 
 ## 9. Data quality and analysis contracts
 
@@ -695,13 +717,13 @@ If neither valid cached decision nor snapshot is allowed, return the declared de
 
 - Sample ratio mismatch by experiment revision and important slice.
 - Assignment balance / A/A uniformity.
-- Assignment churn across configuration revisions.
+- Assignment churn across configuration sequences/epochs.
 - Assignment without exposure.
 - Exposure without authoritative/provisional assignment.
 - Applied effect not allowed by assigned variant.
 - Missing or invalid decision token.
 - Forbidden co-exposure.
-- Unexpected configuration revision at exposure.
+- Unexpected configuration sequence at exposure.
 - Duplicate, late, or out-of-order events.
 - Outcome identity not resolvable by declared relationship.
 - Fallback/default/control-only decisions incorrectly included as randomised control.
@@ -732,7 +754,7 @@ outcome/metric,
 interaction analysis status
 ```
 
-Pairwise checks are practical defaults. Higher-order interaction exploration is opt-in due to sparse cells and multiple-comparison cost.
+Pairwise checks are practical defaults, but co-exposure alone does not establish an estimable interaction. A report must distinguish assignment interaction, factual/counterfactual trigger interaction, and actual co-exposure. It requires compatible or explicitly mapped randomisation/analysis units, temporal overlap, factorial cell counts and SRM status, clustering, predeclared contrasts where confirmatory, power/precision, multiplicity policy, and carryover/washout assumptions. Higher-order effect sets are still composition-validated even when statistical exploration is opt-in.
 
 ## 10. Observability and operations
 
@@ -778,9 +800,9 @@ Pairwise checks are practical defaults. Higher-order interaction exploration is 
 ## 11. Threat and misuse considerations
 
 - **Targeting a named person:** prohibit direct named-unit experiment configuration; allow only controlled support overrides outside causal analysis and label them non-random.
-- **PII leakage:** typed opaque IDs, schema allow lists, payload classification, no free-form context by default.
+- **Pseudonymous identity leakage:** tenant/environment-scoped tokenisation or keyed HMAC, schema allow lists, purpose limitation, relationship-graph controls, payload classification, and no free-form context by default.
 - **Assignment manipulation:** RBAC, dual approval for high-risk layers, immutable audit, signed snapshots.
-- **Token tampering/replay:** signature, audience, key ID, expiry, decision lookup, rotation.
+- **Token tampering/replay:** bind tenant, environment, issuer, audience, schema, decision point, manifest, validity, and key ID; authorise producer/unit references; support rotation and historical verification.
 - **Treatment exfiltration:** token holds IDs only; sensitive effect payload stays server-side.
 - **Unbounded eligibility complexity:** restricted expression language, cost limits, deterministic functions.
 - **Metric gaming:** predeclared primary/guardrail metrics, immutable analysis plan revision, result caveats.

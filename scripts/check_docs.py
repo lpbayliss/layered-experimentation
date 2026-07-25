@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -61,14 +62,43 @@ def check_required_files() -> list[str]:
         "LICENSE",
         "docs/specification.md",
         "docs/architecture.md",
+        "docs/correctness-contracts.md",
         "docs/research.md",
+        "docs/review.md",
         "examples/layered-experiment.yaml",
     ]
     return [f"missing required file: {path}" for path in required if not (ROOT / path).exists()]
 
 
+def check_json_examples() -> list[str]:
+    errors: list[str] = []
+    for document in ROOT.rglob("*.md"):
+        text = document.read_text(encoding="utf-8")
+        for index, block in enumerate(re.findall(r"```json\n(.*?)\n```", text, re.DOTALL), 1):
+            try:
+                json.loads(block)
+            except json.JSONDecodeError as exc:
+                errors.append(
+                    f"{document.relative_to(ROOT)}: JSON block {index}: {exc.msg}"
+                )
+    return errors
+
+
+def check_requirement_ids() -> list[str]:
+    text = (ROOT / "docs" / "specification.md").read_text(encoding="utf-8")
+    ids = re.findall(r"\| (FR-\d+|QR-\d+|SEC-\d+) \|", text)
+    duplicates = sorted({requirement_id for requirement_id in ids if ids.count(requirement_id) > 1})
+    return [f"duplicate requirement IDs: {duplicates}"] if duplicates else []
+
+
 def main() -> int:
-    errors = check_required_files() + check_local_links() + check_research_references()
+    errors = (
+        check_required_files()
+        + check_local_links()
+        + check_research_references()
+        + check_json_examples()
+        + check_requirement_ids()
+    )
     if errors:
         for error in errors:
             print(f"ERROR: {error}")

@@ -50,6 +50,26 @@ Reviewed against the repository’s stated requirements and the `agentic-softwar
 - Treatment payload classification.
 - Independent specialist review from data science, privacy/security, and operations.
 
+## Independent architecture review
+
+A read-only distributed-systems review initially returned **not ready as an implementation contract**. The following findings were accepted and corrected:
+
+| Finding | Resolution |
+|---|---|
+| Definition revision could rebucket subjects | Split definition, analysis, assignment, namespace-partition, allocation-map, and configuration versions |
+| Persisted assignment identity incomplete | Tenant/environment-scoped global assignment key plus transactional insert-or-read |
+| Mixed-unit namespace exclusion invalid | Each namespace binds exactly one randomisation unit type |
+| Cached/offline reconciliation ambiguous | Offline first assignment prohibited by default; monotonic sequences, leases, revocation tombstones, and conflict quarantine specified |
+| Hash could not replay eligibility | Guarantee narrowed to typed recorded-decision explanation; protected input/relationship retention governs full replay |
+| Singular context token could not represent fan-out | Immutable mergeable context manifests with lineage, deduplication, bounds, and attribution precedence |
+| Slot reuse and negative decisions undefined | Effective ownership intervals, experiment epochs, quarantine/washout, and negative-state persistence defined |
+| Pairwise compatibility insufficient | Complete-set reducer validation and conservative eligibility DSL defined |
+| Exposure and event contracts weak | Post-effect acknowledgement, immutable mismatch facts, event fingerprints, corrections, buffering, and loss telemetry defined |
+| Interaction inference underspecified | Assignment/trigger/exposure interactions and estimability requirements separated |
+| Privacy/deletion/token semantics incomplete | Pseudonymous-data controls, lawful-erasure mechanisms, scope-bound tokens, keyed digests, and replay-loss reporting defined |
+
+The corrections are normative in [Correctness contracts](correctness-contracts.md).
+
 ## Review conclusion
 
-Proceed only with an executable Phase 0 specification: schemas, canonical serialization, golden vectors, reference allocator, conflict validator, and property tests. Do not commit to the production store, availability architecture, or analytical policy until the blocking decisions are resolved.
+Proceed only with an executable Phase 0 specification: schemas, canonical serialization, golden vectors, reference allocator, conflict validator, and property tests. The public repository is suitable as a reviewed design draft, **not** a production implementation contract. Do not commit to the production store, offline authority model, availability architecture, or analytical policy until the blocking decisions are resolved.

@@ -11,7 +11,7 @@ Google’s overlapping-infrastructure paper distinguishes diverted traffic from 
 
 ## Decision
 
-Store four append-only fact types:
+Store four immutable-by-default fact types; corrections are linked events and lawful erasure follows the explicit deletion contract:
 
 1. **Assignment:** authoritative treatment decision and configuration provenance.
 2. **Exposure/trigger:** treatment actually reached the effect point, plus counterfactual trigger where required.

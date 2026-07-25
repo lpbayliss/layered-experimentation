@@ -54,6 +54,7 @@ flowchart LR
 
 - [Full specification](docs/specification.md)
 - [Architecture and data contracts](docs/architecture.md)
+- [Correctness contracts](docs/correctness-contracts.md)
 - [Research basis](docs/research.md)
 - [Specification review and readiness gate](docs/review.md)
 - [Migration from feature-flag-owned assignment](docs/migration-from-feature-flags.md)

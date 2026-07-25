@@ -15,6 +15,8 @@ last_updated: 2026-07-25
 
 **Readiness:** Conditionally ready for a technical prototype; not ready for production implementation until the blocking SLO, identity, privacy, and analytical-ownership decisions in §15 are accepted.
 
+The normative distributed-systems, causal-lineage, event-durability, and privacy semantics are defined in [Correctness contracts](correctness-contracts.md). An implementation must satisfy both documents; where this overview is less precise, the correctness contracts govern.
+
 ## 1. Decision summary
 
 Build a domain-agnostic experimentation framework with a dedicated assignment service and small client SDK. The service—not a feature-flag provider—will own eligibility, deterministic treatment assignment, mutual exclusion, compatibility rules, immutable provenance, and assignment audit.
@@ -83,9 +85,9 @@ The model is informed by primary engineering sources documented in [research.md]
 
 ### 4.1 Goals
 
-**G-01 — Attribution:** Every affected decision and later outcome can be associated with its experiment assignment, treatment, configuration revision, assignment unit, actual exposure, and concrete applied effects.
+**G-01 — Attribution:** Every affected decision and later outcome can be associated with its experiment assignment, treatment, pinned configuration sequence, assignment unit, actual exposure, and concrete applied effects.
 
-**G-02 — Ease of use:** The normal application integration is one assignment call plus one exposure call (or an atomic assign-and-expose operation), with SDK propagation of a decision-context token.
+**G-02 — Ease of use:** The normal application integration is one assignment call followed by one post-effect exposure acknowledgement, with SDK propagation and merge of bounded decision-context manifests.
 
 **G-03 — Isolation:** Introducing, stopping, or deleting one experiment does not alter assignments for unrelated running experiments.
 
@@ -218,7 +220,7 @@ An experiment is the durable identity and lifecycle. An **experiment revision** 
 - exposure contract;
 - analysis unit and correlation requirements.
 
-Changing assignment semantics creates a new revision and usually a new assignment epoch. Mutable edits must not rewrite historical meaning.
+Changing any field creates an immutable definition revision. Assignment-affecting fields create a new assignment epoch; exposure/metric/estimand fields create a new analysis revision without rebucketing; namespace partition and allocation-map versions are separate. Mutable edits must not rewrite historical meaning. See [Correctness contracts §2](correctness-contracts.md#2-revision-and-epoch-taxonomy).
 
 ### 5.6 Assignment
 
@@ -252,19 +254,19 @@ A later event measured for analysis. Outcomes are domain-defined but use a commo
 | FR-004 | The control plane must reject configurations with overlapping exclusive slots in the same namespace or experiments whose unit type differs from the namespace contract. | Property and integration tests |
 | FR-005 | The control plane must reject eligible experiment pairs with incompatible effect claims unless an explicit reviewed override exists. | Conflict-matrix tests |
 | FR-006 | Adding, stopping, or removing an experiment must not reassign units in unrelated active experiments. | Snapshot-diff property test over generated configurations |
-| FR-007 | A caller must be able to request assignments for a named decision point and receive a decision-set ID, assignment details, treatment payloads, configuration revision, and context token. | API contract tests |
+| FR-007 | A caller must be able to request assignments for a named decision point and receive a decision-set ID, assignment details, treatment payloads, configuration sequence, and mergeable context-manifest token. | API contract tests |
 | FR-008 | Repeating a request with the same idempotency key and canonical decision inputs must return the original persisted decision. | Idempotency integration test |
 | FR-009 | The system must record assignment separately from exposure. | Storage/event contract inspection |
 | FR-010 | The SDK must let callers record actual applied effects, not only intended treatment names. | SDK integration test |
 | FR-011 | Exposure must include or resolve to the active assignment vector relevant to the decision. | Canonical dataset test |
 | FR-012 | Outcome events must be joinable through explicit unit/correlation relationships and decision context; the platform must not rely on guessed identity joins. | End-to-end attribution fixture |
-| FR-013 | A historical assignment must be explainable using canonical inputs, eligibility result, allocation slot, revision, algorithm, and exclusion/compatibility result. | Audit API integration test |
+| FR-013 | A historical assignment must remain explainable from its minimized typed decision trace; full re-execution is required only while protected canonical inputs and relationship versions are retained. | Audit API and retention/deletion integration tests |
 | FR-014 | Each layer or experiment must declare a safe failure policy. | Publication validation |
 | FR-015 | The service must support previewing an assignment without recording exposure and simulating a definition against fixture units without allocating production subjects. | Preview/simulation tests |
 | FR-016 | An experiment must transition through explicit lifecycle states and retain terminal history. | State-machine tests |
 | FR-017 | Feature-delivery adapters must consume an explicit treatment; they must not independently randomise the unit. | Adapter contract tests |
-| FR-018 | Configuration publication must produce an immutable, checksummed snapshot. | Snapshot signature/checksum tests |
-| FR-019 | For sticky experiments, concurrent or repeated first decisions for the same experiment epoch and canonical unit must resolve to one authoritative assignment regardless of request idempotency key. | Unique-constraint and concurrency integration tests |
+| FR-018 | Configuration publication must produce an immutable, monotonically sequenced snapshot with both content checksum and publisher signature. | Digest, signature, rollback-protection, and key-rotation tests |
+| FR-019 | For sticky experiments, concurrent or repeated first decisions for the same tenant, environment, experiment, assignment epoch, and canonical unit must resolve to one authoritative assignment regardless of request idempotency key. | Unique-constraint and concurrency integration tests |
 
 ### 6.2 Stability invariants
 
@@ -272,9 +274,9 @@ A later event measured for analysis. Outcomes are domain-defined but use a commo
 
 **INV-002 — Namespace slot stability:** Active experiments own explicit fixed slots. Adding or deleting another experiment never compacts or renumbers occupied slots.
 
-**INV-003 — Historical immutability:** Published revisions, decisions, exposures, and outcomes are append-only. Corrections are new records linked to the superseded record.
+**INV-003 — Historical immutability with lawful erasure:** Published revisions and event facts are never silently rewritten. Corrections are linked events; lawful deletion uses explicit tombstoning, relationship-map deletion, crypto-shredding, or irreversible aggregation and reports the resulting loss of replay evidence.
 
-**INV-004 — No hidden overlap:** A decision may contain multiple assignments for one layer only when every pair is explicitly compatible for that configuration revision.
+**INV-004 — No hidden overlap:** A decision may contain multiple assignments for one layer only when the complete simultaneously applicable set passes explicit compatibility, exclusion, unit, and effect-composition validation for that configuration sequence.
 
 **INV-005 — No assignment-as-exposure:** Analysis datasets must not label a unit exposed without an exposure fact or an explicitly declared intent-to-treat analysis.
 
@@ -300,25 +302,25 @@ A later event measured for analysis. Outcomes are domain-defined but use a commo
 
 | ID | Requirement | Verification |
 |---|---|---|
-| SEC-001 | Core records must use opaque subject IDs and prohibit raw direct identifiers in unit IDs or free-form attributes. | Schema validation and security tests |
+| SEC-001 | Core records must use tenant/environment-scoped tokenised or keyed pseudonymous subject IDs and prohibit raw direct identifiers in unit IDs or free-form attributes; opaque stability is still treated as personal/pseudonymous data. | Schema, cross-environment isolation, and security tests |
 | SEC-002 | Eligibility attributes must use an allow-listed typed schema with classification and retention policy. | Publication validation |
-| SEC-003 | Decision-context tokens must be integrity protected, scoped, versioned, and free of sensitive treatment payloads. | Cryptographic and payload inspection tests |
+| SEC-003 | Decision-context tokens must bind tenant, environment, issuer, audience, schema, decision point, manifest, validity, and key ID; ingestion must authorise the producer and correlation-unit reference. | Tamper, replay, cross-scope, key-rotation, and payload inspection tests |
 | SEC-004 | Definition authoring, approval, publication, pause, and override actions must be authorised and audited. | RBAC and audit tests |
 | SEC-005 | Sensitive effect values must be stored under access controls; analytics may use stable hashes or classified projections. | Data-access review |
 | SEC-006 | Logs and telemetry must not contain raw identifiers, secrets, or unrestricted eligibility payloads. | Automated log scanning |
-| SEC-007 | Retention and deletion rules must apply independently to definitions, decisions, exposures, outcomes, and subject relationships. | Retention workflow tests |
+| SEC-007 | Retention, lawful deletion, residency, consent/opt-out where applicable, and key-rotation/crypto-shredding rules must apply independently to definitions, decisions, exposures, outcomes, and subject relationships; any resulting loss of replay must be reported. | Retention, erasure, residency, and audit-degradation workflow tests |
 
 ## 7. Allocation and overlap semantics
 
 ### 7.1 Fixed slot map
 
-Each allocation namespace has a fixed-size versioned slot space. The exact slot count is an implementation choice; changing it creates a new namespace epoch.
+Each allocation namespace has a fixed-size versioned slot space. The exact slot count is an implementation choice; changing it creates a new namespace partition epoch and a reviewed namespace-wide migration.
 
 ```text
-namespace_slot = Hash(namespace_salt, unit_type, canonical_unit) mod slot_count
+namespace_slot = Hash(namespace_salt, namespace_partition_epoch, unit_type, canonical_unit) mod slot_count
 ```
 
-Experiments receive explicit slot sets. The control plane does not compact the map when an experiment ends. Freed slots may later be allocated, but active ownership never moves implicitly.
+Experiments receive explicit slot sets with effective ownership intervals. The control plane does not compact the map when an experiment ends. Freed slots may be reallocated only after any required carryover washout/quarantine; active ownership and other experiment assignments never move implicitly.
 
 Within an allocated experiment:
 
@@ -327,7 +329,7 @@ variant_value = Hash(experiment_salt, experiment_id, assignment_epoch, canonical
 variant = map_to_weight_interval(variant_value)
 ```
 
-Changing variant weights may reassign units. Therefore weight changes that affect a running experiment must create a new epoch, show a churn preview, and require review. Metadata-only revisions preserve the epoch and do not enter the variant hash. If stable cohorts are required while adding a treatment, allocate new slots or define a reviewed migration rather than moving existing boundaries.
+Changing variant weights may reassign units. Therefore weight changes that affect a running experiment must create a new assignment epoch, show a churn preview, and require review. Metadata-only revisions preserve the epoch and do not enter the variant hash. Any slot-set expansion/shrinkage also creates a new assignment epoch for that experiment; other slot owners remain unchanged. Slot ownership has effective intervals, and freed slots may require a washout/quarantine interval before reuse. Changing namespace unit, slot count, canonicalisation, hash, or salt creates a separate namespace partition epoch and is a high-impact migration.
 
 ### 7.2 Eligibility
 
@@ -347,13 +349,15 @@ Eligibility changes can alter the observed population. They therefore create a n
 
 ### 7.3 Same-layer overlap
 
-The safe default is mutual exclusion inside an allocation namespace. Two experiments in different namespaces in the same layer may overlap when:
+The safe default is mutual exclusion inside an allocation namespace. Experiments in different namespaces in the same layer may overlap only when the **complete simultaneously applicable set**, not merely each pair:
 
-1. they declare each other compatible or satisfy an approved compatibility policy;
-2. their effect claims are disjoint or use registered composable operators;
-3. neither exclusion rule matches;
-4. the control plane can determine a stable composition order;
-5. the analysis plan acknowledges possible interaction.
+1. has mutual compatibility or an approved set-level composition policy;
+2. has disjoint effects or registered reducers with defined types, identity, associativity, commutativity/ordering, error behaviour, and version;
+3. matches no exclusion rule;
+4. resolves to one deterministic composition independent of discovery order;
+5. has an analysis plan acknowledging possible interaction.
+
+Two `replace` claims on the same effect are invalid without an explicit versioned composition contract. Eligibility uses a restricted DSL whose static intersection result is `proven-disjoint`, `may-overlap`, or `invalid`; `may-overlap` is conservatively treated as overlap.
 
 A broad experiment that changes many effects should use an exclusive namespace or explicitly exclude narrower experiments.
 
@@ -405,39 +409,47 @@ sequenceDiagram
 
 Deterministic hashing provides reproducibility and local recovery, but persistence records facts that hashing alone cannot:
 
-- the exact eligibility inputs/revision observed;
+- the minimized typed predicate, relationship, allocation, and composition trace observed under the pinned configuration sequence;
 - which exclusions and compatibility rules ran;
 - whether fallback occurred;
 - configuration propagation state;
 - idempotent decision reuse;
 - the context token attached to downstream behaviour.
 
-The initial design therefore persists authoritative first decisions. A later high-scale mode may allow locally evaluated assignments with append-only decision events, but it must preserve equivalent provenance.
+The initial design therefore persists authoritative first decisions. A later high-scale local-first mode is permitted only with equivalent provenance, bounded allocation authority/lease, globally reconciled assignment uniqueness, and revocation semantics defined in the correctness contracts.
 
 ### 8.2 Exposure timing
 
 An exposure should be emitted at the narrowest point where treatment can affect behaviour—not when configuration is fetched. The API supports:
 
-- `assign` followed by explicit `expose`;
-- `assign-and-expose` when treatment is necessarily applied immediately;
+- `assign` followed by an application acknowledgement emitted only after the effect point succeeds;
 - counterfactual/trigger events where both control and treatment eligibility at the effect point must be measured.
+
+A remote service cannot atomically prove application exposure. Convenience helpers may prepare an envelope, but must not emit it before the caller confirms actual use.
 
 ### 8.3 Decision-context propagation
 
-The service returns a signed compact token containing identifiers only:
+The service returns a signed compact token referencing an immutable server-side context manifest:
 
 ```json
 {
   "v": 1,
-  "decisionSetId": "ds_...",
-  "configurationRevision": "cfg_...",
-  "assignmentIds": ["asn_..."],
+  "tenant": "tenant-id",
+  "environment": "production",
+  "decisionPoint": "checkout",
+  "contextManifestId": "ctx_...",
+  "configurationSequence": 123,
   "issuedAt": "...",
+  "treatmentValidUntil": "...",
+  "issuer": "experimentation-service",
+  "audience": "application-and-event-ingestion",
   "keyId": "..."
 }
 ```
 
-Applications propagate it through request context and domain events. The token links to server-side records; it does not carry sensitive payloads.
+A context manifest can reference multiple parent manifests, decision sets, assignments, and exposures. SDKs merge by verified tenant/environment, canonical union, deduplication, and stable ordering; bounded tokens spill to server-side manifests. Missing or truncated lineage is explicit data-quality state.
+
+Applications propagate the token through request context and domain events. It carries identifiers only and links to protected server-side records.
 
 Treatment validity and correlation validity are separate. An expired decision must not authorise a new exposure, but its signed identifiers may still correlate a later outcome within retention. Event ingestion validates signature, key history, event time, and referenced decision without treating the token as an authorisation credential. Signing keys and lookup records must be retained long enough for the longest supported outcome window.
 
@@ -472,7 +484,7 @@ Permitted patterns:
 2. **Explicit variation:** Assignment treatment names a LaunchDarkly variation or prerequisite; the adapter requests that exact delivery path without independent percentage rollout.
 3. **Assignment context:** The adapter passes a non-sensitive assignment key to a flag configured for exact targeting, never percentage bucketing.
 
-The adapter records flag key, returned variation, and flag/config revision in the applied-effect manifest. If delivery disagrees with assignment, exposure is rejected or marked invalid according to policy and a data-quality event is raised.
+The adapter records flag key, returned variation, and flag/config revision in the applied-effect manifest. If delivery disagrees with assignment, the system always persists both intended and actual effects as an immutable mismatch fact, marks it invalid for primary analysis, and raises a data-quality alert. It never rejects or discards the evidence.
 
 ## 10. Failure semantics
 
@@ -482,7 +494,7 @@ Each layer defines a reviewed default; an experiment may choose a stricter compa
 |---|---|
 | `safe-default` | Use the non-experimental default and record fallback |
 | `cached-decision` | Reuse a previously persisted decision within declared validity |
-| `cached-configuration` | Evaluate locally from an approved signed snapshot and emit decision asynchronously |
+| `cached-configuration` | Evaluate locally from an approved signed snapshot only when the layer has an explicit local-first lease/authority contract; otherwise it cannot create a first sticky assignment |
 | `fail-closed` | Stop the affected operation rather than proceed without an authoritative assignment |
 | `control-only` | Force the control treatment and record fallback |
 
@@ -503,7 +515,7 @@ The event stream produces append-only canonical tables or equivalent views:
 
 ### `experiment_assignment`
 
-One row per assignment decision: unit, layer, namespace, experiment/revision/epoch, variant, slot, eligibility snapshot hash, reasons, configuration revision, failure mode, timestamps.
+One row per assignment decision: tenant/environment, unit token, layer, namespace, experiment/revision/epochs, variant, slot, minimized typed decision-trace reference, reasons, configuration sequence, failure mode, and timestamps. Eligibility hashes alone are not replay evidence; protected inputs/relationship versions are retained only according to classification and deletion policy.
 
 ### `experiment_exposure`
 
@@ -630,8 +642,9 @@ Before `running`:
 - `[BLOCKING]` Authorisation roles and approval policy.
 - `[BLOCKING]` Event transport and canonical warehouse/storage integration.
 - `[BLOCKING]` Statistical/analytical owner and minimum metric/sizing/SRM policy.
-- `[BLOCKING]` Which layers permit local cached first assignment during service outage.
+- `[BLOCKING]` Whether any layer may enable leased local first assignment; the default is prohibited, and each exception requires maximum revocation delay.
 - `[BLOCKING]` Treatment payload classification and storage rules.
+- `[BLOCKING]` Numeric limits for request cardinality, payload/event/token/manifest size, eligibility cost, composition participants, buffers, retries, and late-event windows.
 
 ### 15.3 Delegated technical investigations
 
@@ -648,14 +661,15 @@ Before `running`:
 | Determinism | Golden vectors across .NET processes and an independent reference implementation |
 | Isolation | Property test: arbitrary add/remove/reorder of unrelated definitions does not change existing assignments |
 | Conflict safety | Generated layer/namespace/effect graphs accepted or rejected according to compatibility rules |
-| Idempotency | Repeated/concurrent calls return one authoritative decision |
-| Historical audit | Reproduce sampled decisions from revision and canonical inputs after later configuration changes |
-| Exposure correctness | Triggered fixture proves assigned-but-unexposed units are not marked exposed |
-| Attribution | Multi-unit scenario joins outcome only through declared relationships/context |
-| Interactions | Co-exposure fixture produces expected pairwise combinations and flags forbidden ones |
+| Idempotency | Concurrent requests with different idempotency keys and regions resolve to one tenant/environment/experiment/epoch/unit assignment and one atomic decision set |
+| Configuration consistency | Stale sequence, rollback-as-new-sequence, revocation tombstone, leased-local reconciliation, and split-brain fixtures |
+| Historical audit | Explain sampled decisions from retained typed traces; verify explicit degraded result after protected evidence deletion |
+| Exposure correctness | Assigned-but-unexposed fixture remains unexposed; post-effect acknowledgement and immutable delivery-mismatch facts are verified |
+| Attribution | Fan-out/fan-in context manifests, multiple decision sets, truncation, and time-versioned unit relationships join only by declared precedence |
+| Interactions | Assignment, trigger, and co-exposure fixtures enforce estimability, cell/SRM, temporal, unit, power, and multiplicity status |
 | Delivery | LaunchDarkly adapter records actual variation and catches mismatch |
-| Failure | Fault injection exercises each policy without silent rebucketing |
-| Privacy/security | Schema fuzzing, RBAC tests, log scan, token tamper/expiry/key-rotation tests |
+| Failure | Multi-region partition, database/event/key-service outage, clock skew, stale/corrupt snapshot, revocation lag, late events, relationship deletion, and each fallback policy without silent rebucketing |
+| Privacy/security | Schema fuzzing, cross-tenant/environment isolation, token tamper/replay/scope/key-rotation, lawful erasure, keyed-digest inspection, RBAC, and log scans |
 | Operations | Load, staleness, drift, duplicate/reordering, event-loss, and recovery tests |
 
 ## 17. Implementation slices

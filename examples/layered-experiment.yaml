@@ -36,16 +36,19 @@ layers:
         randomisationUnit: account
         slotCount: 10000
         assignmentAlgorithm: hash-slot-v1
-        assignmentEpoch: 1
+        namespacePartitionEpoch: 1
+        allocationMapRevision: 1
       - id: checkout-copy
         randomisationUnit: account
         slotCount: 10000
         assignmentAlgorithm: hash-slot-v1
-        assignmentEpoch: 1
+        namespacePartitionEpoch: 1
+        allocationMapRevision: 1
 
 experiments:
   - id: shorter-checkout-sequence
-    revision: 1
+    definitionRevision: 1
+    analysisRevision: 1
     status: proposed
     owner: team-checkout
     hypothesis: A shorter sequence increases completion without increasing errors.
@@ -53,6 +56,7 @@ experiments:
     layer: checkout
     allocationNamespace: checkout-sequence
     randomisationUnit: account
+    assignmentEpoch: 1
 
     eligibility:
       all:
@@ -103,7 +107,8 @@ experiments:
     expiry: 2026-10-01
 
   - id: concise-checkout-copy
-    revision: 1
+    definitionRevision: 1
+    analysisRevision: 1
     status: proposed
     owner: team-content
     hypothesis: Concise copy reduces abandonment without increasing support contacts.
@@ -111,6 +116,7 @@ experiments:
     layer: checkout
     allocationNamespace: checkout-copy
     randomisationUnit: account
+    assignmentEpoch: 1
 
     eligibility:
       all:
