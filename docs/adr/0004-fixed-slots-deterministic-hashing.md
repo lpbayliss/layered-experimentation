@@ -13,7 +13,7 @@ Persisted random assignment avoids recalculation but creates a mandatory online 
 
 Each allocation namespace has a fixed versioned slot map. The namespace hash assigns a canonical unit to one slot. Experiments own explicit slot ranges; ended ranges become unallocated and are never compacted implicitly.
 
-A separate experiment/revision/epoch salt selects the variant within an owned slot. Canonical serialization, hash algorithm, slot conversion, salts, and epochs are versioned and verified with golden vectors.
+A separate experiment-ID/assignment-epoch salt selects the variant within an owned slot. Metadata revision is excluded from the hash; any assignment-affecting change must increment the epoch. Canonical serialization, hash algorithm, slot conversion, salts, and epochs are versioned and verified with golden vectors.
 
 Authoritative first decisions are persisted for audit and idempotency. Deterministic evaluation remains the replay and policy-controlled offline mechanism.
 

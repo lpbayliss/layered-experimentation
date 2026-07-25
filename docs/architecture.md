@@ -335,11 +335,11 @@ Stopping `experiment-a` changes its slots to `unallocated`; it does not shift `e
 Variant selection uses a separate experiment salt:
 
 ```text
-u = UniformFloat(Hash(experimentId, revision, assignmentEpoch, canonicalUnit))
+u = UniformFloat(Hash(experimentId, assignmentEpoch, canonicalUnit))
 variant = first cumulative interval containing u
 ```
 
-Because the experiment ID is in the salt, assignments across experiments are independent unless explicitly coupled.
+Because the experiment ID is in the salt, assignments across experiments are independent unless explicitly coupled. Metadata revision is deliberately excluded; assignment-affecting changes must increment the assignment epoch, while descriptive/ownership/analysis metadata may change revision without rebucketing.
 
 ### 4.4 Weight and revision changes
 
@@ -704,6 +704,7 @@ If neither valid cached decision nor snapshot is allowed, return the declared de
 - Unexpected configuration revision at exposure.
 - Duplicate, late, or out-of-order events.
 - Outcome identity not resolvable by declared relationship.
+- Fallback/default/control-only decisions incorrectly included as randomised control.
 - Trigger/counterfactual asymmetry.
 
 Invalid experiments should be visibly quarantined rather than presenting ordinary result reports.

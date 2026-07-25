@@ -246,7 +246,7 @@ A later event measured for analysis. Outcomes are domain-defined but use a commo
 
 | ID | Requirement | Verification |
 |---|---|---|
-| FR-001 | Given the same canonical unit, experiment revision, assignment epoch, and algorithm version, the service must return the same candidate variant. | Cross-process and cross-language golden vectors |
+| FR-001 | Given the same canonical unit, experiment identity, assignment epoch, and algorithm version, the service must return the same candidate variant across metadata-only revisions. | Cross-process and cross-language golden vectors |
 | FR-002 | The service must support registered scalar and composite randomisation units. | Contract tests over example unit types |
 | FR-003 | An experiment must declare one layer, one allocation namespace whose bound unit type matches its randomisation unit, and at least one control and one treatment. | Schema and publication validation |
 | FR-004 | The control plane must reject configurations with overlapping exclusive slots in the same namespace or experiments whose unit type differs from the namespace contract. | Property and integration tests |
@@ -268,7 +268,7 @@ A later event measured for analysis. Outcomes are domain-defined but use a commo
 
 ### 6.2 Stability invariants
 
-**INV-001 — Experiment isolation:** The hash salt for a variant contains experiment ID/revision/epoch; another experiment’s lifecycle cannot affect it.
+**INV-001 — Experiment isolation:** The variant hash salt contains experiment ID and assignment epoch, but not mutable metadata revision; another experiment’s lifecycle cannot affect it, and a metadata-only revision cannot rebucket it.
 
 **INV-002 — Namespace slot stability:** Active experiments own explicit fixed slots. Adding or deleting another experiment never compacts or renumbers occupied slots.
 
@@ -323,11 +323,11 @@ Experiments receive explicit slot sets. The control plane does not compact the m
 Within an allocated experiment:
 
 ```text
-variant_value = Hash(experiment_salt, revision, assignment_epoch, canonical_unit)
+variant_value = Hash(experiment_salt, experiment_id, assignment_epoch, canonical_unit)
 variant = map_to_weight_interval(variant_value)
 ```
 
-Changing variant weights may reassign units. Therefore weight changes that affect a running experiment must create a new epoch, show a churn preview, and require review. If stable cohorts are required, allocate new slots or append a new treatment without moving existing boundaries.
+Changing variant weights may reassign units. Therefore weight changes that affect a running experiment must create a new epoch, show a churn preview, and require review. Metadata-only revisions preserve the epoch and do not enter the variant hash. If stable cohorts are required while adding a treatment, allocate new slots or define a reviewed migration rather than moving existing boundaries.
 
 ### 7.2 Eligibility
 
@@ -439,6 +439,8 @@ The service returns a signed compact token containing identifiers only:
 
 Applications propagate it through request context and domain events. The token links to server-side records; it does not carry sensitive payloads.
 
+Treatment validity and correlation validity are separate. An expired decision must not authorise a new exposure, but its signed identifiers may still correlate a later outcome within retention. Event ingestion validates signature, key history, event time, and referenced decision without treating the token as an authorisation credential. Signing keys and lookup records must be retained long enough for the longest supported outcome window.
+
 ### 8.4 Applied-effect manifest
 
 The exposure records the concrete behaviour used:
@@ -493,7 +495,7 @@ Every policy defines:
 - caller-visible reason code;
 - operational alerting threshold.
 
-Silent random fallback is forbidden.
+Silent random fallback is forbidden. A fallback response—including `control-only`—is a non-random operational fact, not an ordinary control assignment, and must be excluded or separately modelled in causal analysis.
 
 ## 11. Canonical data products
 
