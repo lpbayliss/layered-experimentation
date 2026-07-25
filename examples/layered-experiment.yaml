@@ -1,0 +1,176 @@
+# Generic example: two compatible experiments at one decision point.
+# This is illustrative configuration, not a final machine schema.
+
+apiVersion: experimentation.dev/v1alpha1
+kind: ExperimentBundle
+metadata:
+  id: checkout-experiments-2026-07
+  revision: 1
+
+registries:
+  unitTypes:
+    - id: account
+      kind: scalar
+      classification: pseudonymous
+    - id: session
+      kind: scalar
+      classification: pseudonymous
+
+  effects:
+    - id: checkout.sequence
+      allowedModes: [replace]
+    - id: checkout.copy
+      allowedModes: [replace]
+
+layers:
+  - id: checkout
+    description: Decisions that influence checkout presentation and flow.
+    owner: team-checkout
+    supportedUnitTypes: [account, session]
+    allowedEffects: [checkout.sequence, checkout.copy]
+    defaultFailurePolicy:
+      mode: safe-default
+
+    allocationNamespaces:
+      - id: checkout-sequence
+        randomisationUnit: account
+        slotCount: 10000
+        assignmentAlgorithm: hash-slot-v1
+        assignmentEpoch: 1
+      - id: checkout-copy
+        randomisationUnit: account
+        slotCount: 10000
+        assignmentAlgorithm: hash-slot-v1
+        assignmentEpoch: 1
+
+experiments:
+  - id: shorter-checkout-sequence
+    revision: 1
+    status: proposed
+    owner: team-checkout
+    hypothesis: A shorter sequence increases completion without increasing errors.
+
+    layer: checkout
+    allocationNamespace: checkout-sequence
+    randomisationUnit: account
+
+    eligibility:
+      all:
+        - attribute: country
+          operator: in
+          value: [AU, NZ]
+
+    slotAllocation:
+      ranges: [1000-1999]
+
+    variants:
+      - id: control
+        weight: 0.5
+        effects:
+          checkout.sequence:
+            mode: replace
+            valueRef: checkout-v2
+      - id: short
+        weight: 0.5
+        effects:
+          checkout.sequence:
+            mode: replace
+            valueRef: checkout-v3
+
+    compatibility:
+      allow: [concise-checkout-copy]
+      deny: []
+
+    exposure:
+      point: checkout.rendered
+      counterfactualTrigger: false
+
+    analysis:
+      unit: account
+      primaryOutcomes: [checkout.completed]
+      guardrails: [checkout.error]
+      interactions:
+        - with: concise-checkout-copy
+          status: predeclared
+
+    failurePolicy:
+      mode: safe-default
+      defaultEffects:
+        checkout.sequence:
+          mode: replace
+          valueRef: checkout-v2
+
+    expiry: 2026-10-01
+
+  - id: concise-checkout-copy
+    revision: 1
+    status: proposed
+    owner: team-content
+    hypothesis: Concise copy reduces abandonment without increasing support contacts.
+
+    layer: checkout
+    allocationNamespace: checkout-copy
+    randomisationUnit: account
+
+    eligibility:
+      all:
+        - attribute: country
+          operator: in
+          value: [AU, NZ]
+
+    slotAllocation:
+      ranges: [3000-3999]
+
+    variants:
+      - id: control
+        weight: 0.5
+        effects:
+          checkout.copy:
+            mode: replace
+            valueRef: checkout-copy-v1
+      - id: concise
+        weight: 0.5
+        effects:
+          checkout.copy:
+            mode: replace
+            valueRef: checkout-copy-v2
+
+    compatibility:
+      allow: [shorter-checkout-sequence]
+      deny: []
+
+    exposure:
+      point: checkout.rendered
+      counterfactualTrigger: false
+
+    analysis:
+      unit: account
+      primaryOutcomes: [checkout.completed]
+      guardrails: [support.contact]
+      interactions:
+        - with: shorter-checkout-sequence
+          status: predeclared
+
+    failurePolicy:
+      mode: safe-default
+      defaultEffects:
+        checkout.copy:
+          mode: replace
+          valueRef: checkout-copy-v1
+
+    expiry: 2026-10-01
+
+# Expected behaviour:
+#
+# - Each namespace independently hashes the account, so a unit can be assigned
+#   to neither, either, or both experiments.
+# - The pair can overlap because compatibility is mutual and their effect claims
+#   are disjoint.
+# - Adding/removing the copy experiment never changes sequence assignments.
+# - An exposure at checkout.rendered records both assignments and both concrete
+#   effect values when both treatments apply.
+# - Outcome events propagate the decision-context token, so analysis can examine
+#   each main effect and their predeclared interaction.
+# - A third experiment replacing both checkout.sequence and checkout.copy would
+#   be rejected unless it uses an exclusive namespace or explicitly excludes
+#   both experiments.
